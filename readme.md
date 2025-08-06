@@ -7,7 +7,7 @@
   
 ### [arXiv Paper](https://arxiv.org/abs/2409.14072)
 
-[Shuai Zhang](https://github.com/Shuaizhang7) <sup>1\*</sup>, [Guanjun Wu](https://guanjunwu.github.io/) <sup>2\*</sup>,[Xinggang Wang](https://xwcv.github.io/) <sup>1</sup>,[Bin Feng](https://scholar.google.com/citations?user=nRc8u6gAAAAJ&hl=en&oi=ao) <sup>1</sup>,
+[Shuai Zhang](https://github.com/Shuaizhang7) <sup>1\*</sup>, [Guanjun Wu](https://guanjunwu.github.io/) <sup>2\*</sup>,[Zhoufeng Xie]() <sup>1</sup>,[Xinggang Wang](https://xwcv.github.io/) <sup>1</sup>,[Bin Feng](https://scholar.google.com/citations?user=nRc8u6gAAAAJ&hl=en&oi=ao) <sup>1</sup>,
 [Wenyu Liu](http://eic.hust.edu.cn/professor/liuwenyu) <sup>1,📧</sup>
 
 <sup>1</sup> School of Electronic Information and Communications, Huazhong University of Science and Technology \
