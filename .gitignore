@@ -1,0 +1,29 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python packaging and native build artifacts
+build/
+dist/
+*.egg-info/
+*.so
+*.o
+*.a
+*.dylib
+*.dll
+*.pyd
+.ninja_deps
+.ninja_log
+
+# Local experiment outputs and logs
+outputs/
+*.log
+
+# Local tooling and environments
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.idea/
+.vscode/
