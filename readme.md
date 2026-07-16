@@ -73,7 +73,7 @@ We use the following dataset:
 Activate the environment first:
 
 ```bash
-source /home/flame/miniconda3/etc/profile.d/conda.sh
+source $HOME/miniconda3/etc/profile.d/conda.sh
 conda activate dynamic-2dgs
 ```
 
