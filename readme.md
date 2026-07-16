@@ -147,7 +147,7 @@ This compares `mesh_image/` with `test/ours_*/gt_w`. If an existing output was r
 
 ### Batch reproduction
 
-The following blocks must be executed in order in the same terminal after activating `dynamic-2dgs`. They reproduce the main quantitative results of the paper: D-NeRF mesh-rendering results (Table 1), DG-Mesh mesh metrics (Table 3), and their averages (Table 2). The commands run one scene at a time on GPU 0 to fit the 8 GB GPU.
+The following blocks must be executed in order in the same terminal after activating `dynamic-2dgs`. They reproduce the main quantitative results of the paper: D-NeRF mesh-rendering results (Table 1), DG-Mesh mesh metrics (Table 3), and their averages (Table 2). The commands run one scene at a time on GPU 0 of the single RTX 4090D (24 GB VRAM).
 
 The existing single-scene `jumpingjacks` output is not used here. Batch reproduction always trains every scene to 80,000 iterations and writes fresh results under `outputs/paper_dnerf/` and `outputs/paper_dgmesh/`.
 
@@ -156,9 +156,14 @@ The existing single-scene `jumpingjacks` output is not used here. Batch reproduc
 ```bash
 set -euo pipefail
 
+# Server configuration: one RTX 4090D.
+export CUDA_VISIBLE_DEVICES=0
+
 DNERF_SCENES=(lego bouncingballs jumpingjacks hook mutant standup trex hellwarrior)
 DGMESH_SCENES=(duck horse bird beagle torus2sphere girlwalk)
 ```
+
+Because this server has 24 GB of VRAM, the batch commands below keep camera images on the GPU and omit `--load2gpu_on_the_fly`, which was intended for the original 8 GB GPU setup. Add that flag back to the training and rendering commands if VRAM usage becomes a problem.
 
 #### 2. Train all D-NeRF scenes
 
@@ -171,7 +176,7 @@ for scene in "${DNERF_SCENES[@]}"; do
     --deform_type node --hyper_dim 8 --node_num 1024 \
     --is_blender --eval --gt_alpha_mask_as_scene_mask --local_frame \
     --resolution 1 --W 800 --H 800 \
-    --load2gpu_on_the_fly --iterations 80000
+    --iterations 80000
 done
 ```
 
@@ -184,8 +189,7 @@ for scene in "${DNERF_SCENES[@]}"; do
     --source_path "$HOME/dataset/data/$scene" \
     --model_path "outputs/paper_dnerf/${scene}_node" \
     --deform_type node --hyper_dim 8 --node_num 1024 \
-    --is_blender --eval --local_frame --resolution 1 \
-    --load2gpu_on_the_fly
+    --is_blender --eval --local_frame --resolution 1
 done
 ```
 
@@ -254,7 +258,7 @@ for scene in "${DGMESH_SCENES[@]}"; do
     --deform_type node --hyper_dim 8 --node_num 1024 \
     --is_blender --eval --gt_alpha_mask_as_scene_mask --local_frame \
     --resolution 1 --W 800 --H 800 \
-    --load2gpu_on_the_fly --iterations 80000
+    --iterations 80000
 done
 ```
 
@@ -267,8 +271,7 @@ for scene in "${DGMESH_SCENES[@]}"; do
     --source_path "$HOME/dataset/dg-mesh/$scene" \
     --model_path "outputs/paper_dgmesh/${scene}_node" \
     --deform_type node --hyper_dim 8 --node_num 1024 \
-    --is_blender --eval --local_frame --resolution 1 \
-    --load2gpu_on_the_fly
+    --is_blender --eval --local_frame --resolution 1
   test "$(find "outputs/paper_dgmesh/${scene}_node/train/ours_80000" -maxdepth 1 -name 'frame_*.ply' | wc -l)" -eq 200
 done
 ```
@@ -298,7 +301,7 @@ make CUDA_ARCH="-gencode arch=compute_89,code=sm_89"
 cd "$OLDPWD"
 ```
 
-The `compute_89` setting matches the RTX 4060 Laptop GPU. On another GPU, replace it with that GPU's CUDA compute capability.
+The `compute_89` setting matches the RTX 4090D's CUDA compute capability (sm_89).
 
 #### 9. Arrange the DG-Mesh GT and predictions
 
