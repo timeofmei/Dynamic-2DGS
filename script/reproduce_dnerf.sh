@@ -29,7 +29,7 @@ cd "$REPO_ROOT"
 PYTHON="${PYTHON:-python}"
 GPU_ID="${GPU_ID:-0}"
 ITERATIONS="${ITERATIONS:-80000}"
-DATA_ROOT="${DNERF_DATA_ROOT:-$HOME/dataset/data}"
+DATA_ROOT="${DNERF_DATA_ROOT:-$HOME/autodl-tmp/dataset/data}"
 OUTPUT_ROOT="${DNERF_OUTPUT_ROOT:-$REPO_ROOT/outputs/paper_dnerf}"
 
 SOURCE_PATH="$DATA_ROOT/$SCENE"

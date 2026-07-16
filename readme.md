@@ -83,7 +83,7 @@ Train the `jumpingjacks` scene for 80,000 iterations. The training command write
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python train_gui.py \
-  --source_path "$HOME/dataset/data/jumpingjacks" \
+  --source_path "$HOME/autodl-tmp/dataset/data/jumpingjacks" \
   --model_path outputs/jumpingjacks \
   --deform_type node \
   --hyper_dim 8 --node_num 1024 \
@@ -100,7 +100,7 @@ Run the complete rendering and mesh extraction pipeline for the trained model. T
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python render_mesh.py \
-  --source_path "$HOME/dataset/data/jumpingjacks" \
+  --source_path "$HOME/autodl-tmp/dataset/data/jumpingjacks" \
   --model_path outputs/jumpingjacks_node \
   --deform_type node --hyper_dim 8 --node_num 1024 \
   --is_blender --eval --local_frame --resolution 1 \
@@ -122,7 +122,7 @@ Optionally render a camera trajectory video:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python render_mesh_trajectory.py \
-  --source_path "$HOME/dataset/data/jumpingjacks" \
+  --source_path "$HOME/autodl-tmp/dataset/data/jumpingjacks" \
   --model_path outputs/jumpingjacks_node \
   --deform_type node --hyper_dim 8 \
   --is_blender --eval --local_frame --resolution 1 \
@@ -169,9 +169,9 @@ Because this server has 24 GB of VRAM, the batch commands below keep camera imag
 
 ```bash
 for scene in "${DNERF_SCENES[@]}"; do
-  test -f "$HOME/dataset/data/$scene/transforms_train.json"
+  test -f "$HOME/autodl-tmp/dataset/data/$scene/transforms_train.json"
   CUDA_VISIBLE_DEVICES=0 python train_gui.py \
-    --source_path "$HOME/dataset/data/$scene" \
+    --source_path "$HOME/autodl-tmp/dataset/data/$scene" \
     --model_path "outputs/paper_dnerf/$scene" \
     --deform_type node --hyper_dim 8 --node_num 1024 \
     --is_blender --eval --gt_alpha_mask_as_scene_mask --local_frame \
@@ -187,7 +187,7 @@ done
 for scene in "${DNERF_SCENES[@]}"; do
   test -f "outputs/paper_dnerf/${scene}_node/cfg_args"
   CUDA_VISIBLE_DEVICES=0 python render_mesh.py \
-    --source_path "$HOME/dataset/data/$scene" \
+    --source_path "$HOME/autodl-tmp/dataset/data/$scene" \
     --model_path "outputs/paper_dnerf/${scene}_node" \
     --deform_type node --hyper_dim 8 --node_num 1024 \
     --is_blender --eval --local_frame --resolution 1
@@ -252,9 +252,9 @@ PY
 DGMESH_SCENES=(duck horse bird beagle torus2sphere girlwalk)
 
 for scene in "${DGMESH_SCENES[@]}"; do
-  test -f "$HOME/dataset/dg-mesh/$scene/transforms_train.json"
+  test -f "$HOME/autodl-tmp/dataset/dg-mesh/$scene/transforms_train.json"
   CUDA_VISIBLE_DEVICES=0 python train_gui.py \
-    --source_path "$HOME/dataset/dg-mesh/$scene" \
+    --source_path "$HOME/autodl-tmp/dataset/dg-mesh/$scene" \
     --model_path "outputs/paper_dgmesh/$scene" \
     --deform_type node --hyper_dim 8 --node_num 1024 \
     --is_blender --eval --gt_alpha_mask_as_scene_mask --local_frame \
@@ -270,7 +270,7 @@ done
 for scene in "${DGMESH_SCENES[@]}"; do
   test -f "outputs/paper_dgmesh/${scene}_node/cfg_args"
   CUDA_VISIBLE_DEVICES=0 python render_mesh.py \
-    --source_path "$HOME/dataset/dg-mesh/$scene" \
+    --source_path "$HOME/autodl-tmp/dataset/dg-mesh/$scene" \
     --model_path "outputs/paper_dgmesh/${scene}_node" \
     --deform_type node --hyper_dim 8 --node_num 1024 \
     --is_blender --eval --local_frame --resolution 1
@@ -315,14 +315,14 @@ DG_EVAL_ROOT="$HOME/dgmesh_eval"
 for scene in "${DGMESH_SCENES[@]}"; do
   eval_dir="$DG_EVAL_ROOT/$scene"
   pred_dir="outputs/paper_dgmesh/${scene}_node/train/ours_80000"
-  gt_source="$HOME/dataset/dg-mesh/$scene/mesh_gt"
+  gt_source="$HOME/autodl-tmp/dataset/dg-mesh/$scene/mesh_gt"
 
   test "$(find "$pred_dir" -maxdepth 1 -name 'frame_*.ply' | wc -l)" -eq 200
   test "$(find "$gt_source" -maxdepth 1 -name '*.obj' | wc -l)" -eq 200
 
   mkdir -p "$eval_dir/gt" "$eval_dir/DG-Mesh/dynamic_mesh"
   cp "$pred_dir"/frame_*.ply "$eval_dir/DG-Mesh/dynamic_mesh/"
-  cp "$HOME/dataset/dg-mesh/$scene/transforms_train.json" "$eval_dir/transforms_train.json"
+  cp "$HOME/autodl-tmp/dataset/dg-mesh/$scene/transforms_train.json" "$eval_dir/transforms_train.json"
 
   mapfile -t gt_meshes < <(find "$gt_source" -maxdepth 1 -name '*.obj' -print0 | sort -zV)
   for i in "${!gt_meshes[@]}"; do

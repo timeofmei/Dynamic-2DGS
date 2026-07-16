@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 # @markdown The base directory for all captures. This can be anything if you're running this notebook on your own Jupyter runtime.
-save_dir = os.path.expandvars('$HOME/dataset/data/dynamic/mine/')  # @param {type: 'string'}
+save_dir = os.path.expandvars('$HOME/autodl-tmp/dataset/data/dynamic/mine/')  # @param {type: 'string'}
 capture_name = 'lemon'  # @param {type: 'string'}
 # The root directory for this capture.
 root_dir = Path(save_dir, capture_name)
