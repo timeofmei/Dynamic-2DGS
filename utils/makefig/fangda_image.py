@@ -1,6 +1,9 @@
 import cv2
+from pathlib import Path
 
 import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 def zoom_image(image_path, region,region2, zoom_factor):
     # 读取图像
@@ -155,9 +158,9 @@ def margeimage(dvg,tiv,dgs3,dgs4,ours,gt,output_path):
 '''
 for i in ['gt','3dgs','4dgs','dvg','tiv','ours']:
     # 示例用法
-    image_path = f'/data5/zhangshuai/gaussian-splatting6/utils/066/{i}.png'  # 输入图像的路径
-    image_path2 = f'/data5/zhangshuai/gaussian-splatting6/utils/066/{i}_extend.png'  # 输入图像的路径
-    output_path3 = f'/data5/zhangshuai/gaussian-splatting6/utils/066/{i}_all.png'
+    image_path = f'{PROJECT_ROOT}/utils/066/{i}.png'  # 输入图像的路径
+    image_path2 = f'{PROJECT_ROOT}/utils/066/{i}_extend.png'  # 输入图像的路径
+    output_path3 = f'{PROJECT_ROOT}/utils/066/{i}_all.png'
     # region = (350, 400, 100, 100)   指定要放大的区域的坐标和尺寸 (x, y, width, height) 99
     #region = (500, 350, 100, 100) 
     #region2 = (800, 250, 100, 100) 
@@ -189,7 +192,7 @@ margeimage(dvg,tiv,dgs3,dgs4,ours,gt,output_path3)
 '''
 for j in ['mesh','image']:
     for i in ['d3dgs','dgmesh','ours','scgs','gt']:
-        output_path = '/data3/zhangshuai/SC-2DGSv2/outputs/jumpingjacks_result/'
+        output_path = f'{PROJECT_ROOT}/outputs/jumpingjacks_result/'
         
         if i == 'dgmesh':
             ours_i_path = output_path+f'{j}/{i}/0001.png'
@@ -212,7 +215,7 @@ for j in ['mesh','image']:
 #standup
 for j in ['mesh','image']:
     for i in ['d3dgs','dgmesh','ours','scgs','gt']:
-        output_path = '/data3/zhangshuai/SC-2DGSv2/outputs/standup_result'
+        output_path = f'{PROJECT_ROOT}/outputs/standup_result'
         
         if i == 'dgmesh':
             ours_i_path = output_path+f'/{j}/{i}/0016.png'
@@ -234,7 +237,7 @@ for j in ['mesh','image']:
 '''
 for j in ['mesh','image']:
     for i in ['d3dgs','dgmesh','ours','scgs','gt']:
-        output_path = '/data3/zhangshuai/SC-2DGSv2/outputs/bouncingballs_result'
+        output_path = f'{PROJECT_ROOT}/outputs/bouncingballs_result'
         
         if i == 'dgmesh':
             ours_i_path = output_path+f'/{j}/{i}/0012.png'
@@ -253,7 +256,7 @@ for j in ['mesh','image']:
 '''
 for j in ['mesh','image']:
     for i in ['d3dgs','dgmesh','ours','scgs','gt']:
-        output_path = '/data3/zhangshuai/SC-2DGSv2/outputs/hook_result'
+        output_path = f'{PROJECT_ROOT}/outputs/hook_result'
         
         if i == 'dgmesh':
             ours_i_path = output_path+f'/{j}/{i}/0002.png'
@@ -275,7 +278,7 @@ for j in ['mesh','image']:
 '''
 for j in ['mesh','image']:
     for i in ['d3dgs','dgmesh','ours','scgs','gt','gt_mesh']:
-        output_path = '/data3/zhangshuai/SC-2DGSv2/outputs/beagle_result'
+        output_path = f'{PROJECT_ROOT}/outputs/beagle_result'
         
         if i == 'dgmesh':
             ours_i_path = output_path+f'/{j}/{i}/0021.png'
@@ -295,7 +298,7 @@ for j in ['mesh','image']:
 '''
 for j in ['mesh','image']:
     for i in ['d3dgs','dgmesh','ours','scgs','gt']:
-        output_path = '/data3/zhangshuai/SC-2DGSv2/outputs/hellwarrior_result'
+        output_path = f'{PROJECT_ROOT}/outputs/hellwarrior_result'
         
         if i == 'dgmesh':
             ours_i_path = output_path+f'/{j}/{i}/0002.png'
@@ -318,7 +321,7 @@ for j in ['mesh','image']:
 '''
 for j in ['mesh','image']:
     for i in ['d3dgs','dgmesh','ours','scgs','gt']:
-        output_path = '/data3/zhangshuai/SC-2DGSv2/outputs/mutant_result'
+        output_path = f'{PROJECT_ROOT}/outputs/mutant_result'
         
         if i == 'dgmesh':
             ours_i_path = output_path+f'/{j}/{i}/0017.png'
@@ -340,7 +343,7 @@ for j in ['mesh','image']:
 '''
 for j in ['mesh','image']:
     for i in ['d3dgs','dgmesh','ours','scgs','gt']:
-        output_path = '/data3/zhangshuai/SC-2DGSv2/outputs/trex_result'
+        output_path = f'{PROJECT_ROOT}/outputs/trex_result'
         
         if i == 'dgmesh':
             ours_i_path = output_path+f'/{j}/{i}/0013.png'
@@ -361,7 +364,7 @@ for j in ['mesh','image']:
 
 for j in ['mesh','image']:
     for i in ['d3dgs','dgmesh','ours','scgs','gt']:
-        output_path = '/data3/zhangshuai/SC-2DGSv2/outputs/lego_result'
+        output_path = f'{PROJECT_ROOT}/outputs/lego_result'
         
         if i == 'dgmesh':
             ours_i_path = output_path+f'/{j}/{i}/0018.png'

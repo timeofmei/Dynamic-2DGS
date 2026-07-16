@@ -971,7 +971,7 @@ class App(QWidget):
         self.update_minimap()
 
 
-def seg_video(img_path=None, video_path=None, MIVOS_PATH='/home/yihua/nips2022/code/repos/MiVOS/'):
+def seg_video(img_path=None, video_path=None, MIVOS_PATH=os.path.expanduser('~/MiVOS/')):
     
     # Arguments parsing
     parser = ArgumentParser()
@@ -1048,4 +1048,3 @@ def seg_video(img_path=None, video_path=None, MIVOS_PATH='/home/yihua/nips2022/c
         # sys.exit(app.exec_())
         app.exec_()
         return ex.sv_path + '/mask'
-

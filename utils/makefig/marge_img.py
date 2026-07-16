@@ -1,10 +1,11 @@
 import cv2
+from pathlib import Path
 
 import numpy as np
 
 
 
-output_path = '/data3/zhangshuai/SC-2DGSv2/outputs/lego_result/'
+output_path = str(Path(__file__).resolve().parents[2] / 'outputs' / 'lego_result') + '/'
 d3dgs_i_path = output_path+'image/d3dgs/v00018_zoomed.png'
 dgmesh_i_path = output_path+'image/dgmesh/v00018_zoomed.png'
 ours_i_path = output_path+'image/ours/v00018_zoomed.png'
@@ -62,4 +63,3 @@ if gt_mesh_path != None:
 
 
 margeimage(dgmesh_i,d3dgs_i,scgs_i,ours_i,dgmesh_m,d3dgs_m,scgs_m,ours_m,gt,gt_m,output_path)
-

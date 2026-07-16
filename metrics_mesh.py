@@ -60,17 +60,53 @@ def metrics(render_path,gt_path,savepath,name):
         
 
 
-'''     
-for name in ['d3dgs','dgmesh','ours','scgs']:      
-    gt_path = '/data3/zhangshuai/SC-2DGSv2/outputs/hellwarrior_result/gt'
-    render_path = f'/data3/zhangshuai/SC-2DGSv2/outputs/hellwarrior_result/image/{name}'
-    savepath =  '/data3/zhangshuai/SC-2DGSv2/outputs/hellwarrior_result/image'
-    metrics(render_path,gt_path,savepath,name)
-'''
+if __name__ == "__main__":
+    project_root = Path(__file__).resolve().parent
+    default_model_path = project_root / "outputs" / "jumpingjacks_node"
 
-gt_path = '/data3/zhangshuai/SC-2DGSv2/outputs/torus2sphere_0801_node/test/ours_70000/gt_w'
-render_path = '/data3/zhangshuai/SC-2DGSv2/outputs/torus2sphere_0801_node/mesh_image'
-savepath =  '/data3/zhangshuai/SC-2DGSv2/outputs/torus2sphere_0801_node'
-name= 'mesh_render'
+    parser = ArgumentParser(description="Evaluate rendered mesh images")
+    parser.add_argument(
+        "--model_path",
+        default=str(default_model_path),
+        help="Model output directory, e.g. outputs/jumpingjacks_node",
+    )
+    parser.add_argument(
+        "--gt_path",
+        default=None,
+        help="Ground-truth image directory; defaults to test/ours_*/gt_w",
+    )
+    parser.add_argument(
+        "--render_path",
+        default=None,
+        help="Rendered mesh image directory; defaults to model_path/mesh_image",
+    )
+    parser.add_argument(
+        "--savepath",
+        default=None,
+        help="Directory for the result JSON; defaults to model_path",
+    )
+    parser.add_argument("--name", default="mesh_render")
+    args = parser.parse_args()
 
-metrics(render_path,gt_path,savepath,name)
+    model_path = Path(args.model_path).expanduser()
+    render_path = Path(args.render_path).expanduser() if args.render_path else model_path / "mesh_image"
+    savepath = Path(args.savepath).expanduser() if args.savepath else model_path
+
+    if args.gt_path:
+        gt_path = Path(args.gt_path).expanduser()
+    else:
+        test_dirs = sorted((model_path / "test").glob("ours_*/gt_w"))
+        if not test_dirs:
+            raise FileNotFoundError(
+                f"No white-background GT found under {model_path / 'test'}. "
+                "Re-run render_mesh.py once to generate test/ours_*/gt_w, "
+                "or pass --gt_path explicitly."
+            )
+        gt_path = test_dirs[-1]
+
+    for path in (gt_path, render_path):
+        if not path.is_dir():
+            raise FileNotFoundError(f"Image directory does not exist: {path}")
+    savepath.mkdir(parents=True, exist_ok=True)
+
+    metrics(str(render_path), str(gt_path), str(savepath), args.name)

@@ -1,8 +1,9 @@
 
 import cv2
 import numpy as np
+from pathlib import Path
 
-img_path = "/data3/zhangshuai/SC-2DGSv2/outputs/jumpingjacks_0731_node/test/ours_60000/vis/depth_00002.png"
+img_path = str(Path(__file__).resolve().parents[2] / "outputs" / "jumpingjacks_node" / "test" / "ours_60000" / "vis" / "depth_00002.png")
 
 
 # Load the depth image
