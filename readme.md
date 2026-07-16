@@ -176,6 +176,7 @@ for scene in "${DNERF_SCENES[@]}"; do
     --deform_type node --hyper_dim 8 --node_num 1024 \
     --is_blender --eval --gt_alpha_mask_as_scene_mask --local_frame \
     --resolution 1 --W 800 --H 800 \
+    --test_iterations 80000 --save_iterations 80000 \
     --iterations 80000
 done
 ```
@@ -258,6 +259,7 @@ for scene in "${DGMESH_SCENES[@]}"; do
     --deform_type node --hyper_dim 8 --node_num 1024 \
     --is_blender --eval --gt_alpha_mask_as_scene_mask --local_frame \
     --resolution 1 --W 800 --H 800 \
+    --test_iterations 80000 --save_iterations 80000 \
     --iterations 80000
 done
 ```
