@@ -162,3 +162,10 @@ widgetsnbextension==4.0.13
 xmltodict==0.13.0
 yacs==0.1.8
 zipp==3.18.1
+ninja==1.13.0
+dearpygui
+trimesh
+tinycudann
+pyliblzfse
+glfw
+PyOpenGL
