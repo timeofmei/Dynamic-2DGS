@@ -101,14 +101,18 @@ test "$(find "$PRED_PATH" -maxdepth 1 -type f -name 'frame_*.ply' | wc -l)" -eq 
 test "$(find "$GT_SOURCE" -maxdepth 1 -type f -name '*.obj' | wc -l)" -eq "$EXPECTED_FRAMES"
 
 echo "[DG-Mesh] Arranging evaluator inputs: $SCENE"
+rm -rf "$EVAL_DIR/gt" "$EVAL_DIR/DGMesh/dynamic_mesh"
 mkdir -p "$EVAL_DIR/gt" "$EVAL_DIR/DGMesh/dynamic_mesh"
 cp "$PRED_PATH"/frame_*.ply "$EVAL_DIR/DGMesh/dynamic_mesh/"
 cp "$SOURCE_PATH/transforms_train.json" "$EVAL_DIR/transforms_train.json"
 
-mapfile -t GT_MESHES < <(find "$GT_SOURCE" -maxdepth 1 -type f -name '*.obj' -print0 | sort -zV)
+mapfile -d '' -t GT_MESHES < <(find "$GT_SOURCE" -maxdepth 1 -type f -name '*.obj' -print0 | sort -zV)
 for i in "${!GT_MESHES[@]}"; do
     ln -sfn "${GT_MESHES[$i]}" "$EVAL_DIR/gt/frame_${i}.obj"
 done
+
+test "$(find "$EVAL_DIR/gt" -maxdepth 1 -name '*.obj' | wc -l)" -eq "$EXPECTED_FRAMES"
+test "$(find "$EVAL_DIR/DGMesh/dynamic_mesh" -maxdepth 1 -type f -name '*.ply' | wc -l)" -eq "$EXPECTED_FRAMES"
 
 echo "[DG-Mesh] Running CD/EMD evaluation: $SCENE"
 (
