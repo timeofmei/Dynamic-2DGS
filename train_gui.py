@@ -662,7 +662,12 @@ if __name__ == "__main__":
     gui = GUI(args=args, dataset=lp.extract(args), opt=op.extract(args), pipe=pp.extract(args),testing_iterations=args.test_iterations, saving_iterations=args.save_iterations)
 
 
-    gui.train(args.iterations)
+    # ``GUI`` resumes from the latest saved iteration when checkpoints exist.
+    # Train only the remaining steps so ``--iterations`` remains the target
+    # iteration instead of being interpreted as an additional step count.
+    remaining_iterations = max(0, int(args.iterations) - gui.iteration + 1)
+    print(f"Training from iteration {gui.iteration} to {args.iterations} ({remaining_iterations} steps)")
+    gui.train(remaining_iterations)
     
     # All done
     print("\nTraining complete.")
