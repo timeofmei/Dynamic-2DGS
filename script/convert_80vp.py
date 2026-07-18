@@ -16,15 +16,25 @@ Run this script from the ``dynamic-2dgs`` Conda environment, for example:
 The output uses OpenCV-to-OpenGL camera-axis conversion and recentres/scales
 camera positions around the least-squares point viewed by the rig.  These are
 the conventions required by the repository's Blender dataset reader.
+
+GPU decoding is the default.  It requires an FFmpeg build that advertises the
+``cuda`` hardware acceleration method and NVDEC decoders; pass its path with
+``--ffmpeg-bin`` if it is not on ``PATH``.  Undistortion and JPEG encoding stay
+on CPU and one process is created per active camera worker.
 """
 
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 import logging
 import math
+import os
+import signal
+import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -37,6 +47,7 @@ DEFAULT_INPUT = Path("dataset/80vp/2026-07-08_00-07-40")
 DEFAULT_TEST_CAMERAS = "1,11,21,31,41,51,61,71"
 CV_TO_OPENGL = np.diag([1.0, -1.0, -1.0, 1.0])
 LOGGER = logging.getLogger("convert_80vp")
+MEBIBYTE = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -45,6 +56,8 @@ class CameraCalibration:
 
     name: str
     video_path: Path
+    source_width: int
+    source_height: int
     width: int
     height: int
     frame_count: int
@@ -57,6 +70,27 @@ class CameraCalibration:
     cx: float
     cy: float
     c2w: np.ndarray
+
+
+@dataclass(frozen=True)
+class DecodeSettings:
+    """Video-decoding settings passed to each camera worker."""
+
+    backend: str
+    ffmpeg_bin: str
+    gpu_id: int
+
+
+@dataclass(frozen=True)
+class WorkerPlan:
+    """Memory-bounded process-pool configuration."""
+
+    workers: int
+    cpu_available_mib: int
+    cpu_per_worker_mib: int
+    cpu_limit: int
+    gpu_available_mib: Optional[int]
+    gpu_limit: Optional[int]
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,6 +176,47 @@ def parse_args() -> argparse.Namespace:
         help="Coordinate system of the source world2Cam camera axes.",
     )
     parser.add_argument(
+        "--decode-backend",
+        choices=("gpu", "cpu"),
+        default="gpu",
+        help="Use FFmpeg CUDA/NVDEC decoding (gpu) or OpenCV CPU decoding (cpu).",
+    )
+    parser.add_argument(
+        "--ffmpeg-bin",
+        default="ffmpeg",
+        help="FFmpeg executable compiled with CUDA/NVDEC support for --decode-backend gpu.",
+    )
+    parser.add_argument(
+        "--gpu-id",
+        type=int,
+        default=0,
+        help="GPU used by FFmpeg CUDA/NVDEC decoding.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Camera workers before memory limiting; 0 uses all logical CPU cores.",
+    )
+    parser.add_argument(
+        "--cpu-memory-reserve-mib",
+        type=int,
+        default=4096,
+        help="System memory left free when automatically limiting workers.",
+    )
+    parser.add_argument(
+        "--gpu-memory-reserve-mib",
+        type=int,
+        default=1024,
+        help="GPU memory left free when automatically limiting NVDEC workers.",
+    )
+    parser.add_argument(
+        "--gpu-memory-per-worker-mib",
+        type=int,
+        default=512,
+        help="Conservative GPU-memory budget for each NVDEC worker.",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Reuse already-written image files and regenerate transforms JSON files.",
@@ -182,8 +257,134 @@ def ensure_valid_args(args: argparse.Namespace) -> None:
         raise ValueError("--max-frames must be at least 1 when supplied.")
     if args.camera_radius <= 0:
         raise ValueError("--camera-radius must be positive.")
+    if args.gpu_id < 0:
+        raise ValueError("--gpu-id must be non-negative.")
+    if args.workers < 0:
+        raise ValueError("--workers must be non-negative.")
+    if args.cpu_memory_reserve_mib < 0:
+        raise ValueError("--cpu-memory-reserve-mib must be non-negative.")
+    if args.gpu_memory_reserve_mib < 0:
+        raise ValueError("--gpu-memory-reserve-mib must be non-negative.")
+    if args.gpu_memory_per_worker_mib < 1:
+        raise ValueError("--gpu-memory-per-worker-mib must be at least 1.")
     if args.resume and args.overwrite:
         raise ValueError("Use only one of --resume and --overwrite.")
+
+
+def available_system_memory_mib() -> int:
+    """Read Linux MemAvailable, falling back to the process-visible total RAM."""
+
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        page_count = os.sysconf("SC_PHYS_PAGES")
+        return int(page_size * page_count // MEBIBYTE)
+    except (AttributeError, OSError, ValueError):
+        raise RuntimeError("Could not determine available system memory.")
+
+
+def available_gpu_memory_mib(gpu_id: int) -> int:
+    """Query free GPU memory with nvidia-smi for NVDEC process limiting."""
+
+    command = [
+        "nvidia-smi",
+        f"--id={gpu_id}",
+        "--query-gpu=memory.free",
+        "--format=csv,noheader,nounits",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        values = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if len(values) != 1:
+            raise ValueError(f"unexpected nvidia-smi output: {result.stdout!r}")
+        return int(values[0])
+    except (FileNotFoundError, subprocess.CalledProcessError, ValueError) as exc:
+        stderr = getattr(exc, "stderr", "")
+        detail = stderr.strip() if stderr else str(exc)
+        raise RuntimeError(
+            f"Could not query free memory for GPU {gpu_id} with nvidia-smi: {detail}"
+        ) from exc
+
+
+def estimated_cpu_memory_per_worker_mib(camera: CameraCalibration) -> int:
+    """Conservatively budget one remap, decoded frame, output frame, and JPEG work."""
+
+    source_frame_bytes = camera.source_width * camera.source_height * 3
+    output_frame_bytes = camera.width * camera.height * 3
+    remap_bytes = camera.width * camera.height * 2 * 4
+    working_bytes = source_frame_bytes + output_frame_bytes + remap_bytes
+    return max(128, math.ceil(working_bytes * 1.5 / MEBIBYTE) + 64)
+
+
+def make_worker_plan(args: argparse.Namespace, camera: CameraCalibration) -> WorkerPlan:
+    """Choose a worker count bounded by visible CPU and GPU memory."""
+
+    cpu_available_mib = available_system_memory_mib()
+    cpu_per_worker_mib = estimated_cpu_memory_per_worker_mib(camera)
+    cpu_usable_mib = max(0, cpu_available_mib - args.cpu_memory_reserve_mib)
+    cpu_limit = cpu_usable_mib // cpu_per_worker_mib
+    requested_workers = args.workers or (os.cpu_count() or 1)
+    workers = min(requested_workers, cpu_limit)
+    gpu_available_mib: Optional[int] = None
+    gpu_limit: Optional[int] = None
+
+    if args.decode_backend == "gpu":
+        gpu_available_mib = available_gpu_memory_mib(args.gpu_id)
+        gpu_usable_mib = max(0, gpu_available_mib - args.gpu_memory_reserve_mib)
+        gpu_limit = gpu_usable_mib // args.gpu_memory_per_worker_mib
+        workers = min(workers, gpu_limit)
+
+    if workers < 1:
+        limits = [f"CPU limit={cpu_limit}"]
+        if gpu_limit is not None:
+            limits.append(f"GPU limit={gpu_limit}")
+        raise RuntimeError(
+            "No worker fits within the configured memory reserves (" + ", ".join(limits) + ")."
+        )
+    return WorkerPlan(
+        workers=int(workers),
+        cpu_available_mib=cpu_available_mib,
+        cpu_per_worker_mib=cpu_per_worker_mib,
+        cpu_limit=int(cpu_limit),
+        gpu_available_mib=gpu_available_mib,
+        gpu_limit=int(gpu_limit) if gpu_limit is not None else None,
+    )
+
+
+def validate_gpu_decoder(settings: DecodeSettings) -> None:
+    """Fail early unless FFmpeg advertises CUDA hardware acceleration."""
+
+    try:
+        result = subprocess.run(
+            [settings.ffmpeg_bin, "-hide_banner", "-hwaccels"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        detail = getattr(exc, "stderr", "") or str(exc)
+        raise RuntimeError(
+            "GPU decoding requires an FFmpeg build with CUDA/NVDEC support. "
+            f"Could not run {settings.ffmpeg_bin!r}: {detail.strip()}"
+        ) from exc
+    hardware_accels = {line.strip().lower() for line in result.stdout.splitlines()}
+    if "cuda" not in hardware_accels:
+        raise RuntimeError(
+            f"{settings.ffmpeg_bin!r} does not advertise CUDA hardware acceleration. "
+            "Install an FFmpeg build with CUDA/NVDEC support or use --decode-backend cpu."
+        )
 
 
 def camera_sort_key(name: str) -> Tuple[int, str]:
@@ -450,6 +651,8 @@ def prepare_cameras(
         cameras[name] = CameraCalibration(
             name=name,
             video_path=video_path,
+            source_width=width,
+            source_height=height,
             width=output_width,
             height=output_height,
             frame_count=frame_count,
@@ -523,17 +726,227 @@ def configure_logging(output_dir: Path, requested_path: Optional[Path], verbose:
     return log_path
 
 
-def extract_camera_frames(
+def write_undistorted_frame(
+    image: np.ndarray,
+    camera: CameraCalibration,
+    source_index: int,
+    selected: set,
+    output_dir: Path,
+    jpeg_quality: int,
+    resume: bool,
+    map_x: np.ndarray,
+    map_y: np.ndarray,
+) -> Tuple[int, int]:
+    """Apply CPU remapping/JPEG encoding to a decoded BGR frame when selected."""
+
+    if source_index not in selected:
+        return 0, 0
+    destination = output_image_path(output_dir, camera.name, source_index)
+    if resume and destination.is_file():
+        return 0, 1
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    undistorted = cv2.remap(
+        image,
+        map_x,
+        map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+    )
+    if not cv2.imwrite(
+        str(destination), undistorted, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
+    ):
+        raise RuntimeError(f"Could not write image: {destination}")
+    return 1, 0
+
+
+def read_exact(stream, byte_count: int) -> bytes:
+    """Read exactly one raw-video frame from an FFmpeg stdout pipe."""
+
+    chunks = []
+    remaining = byte_count
+    while remaining:
+        chunk = stream.read(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def extract_with_cpu_decoder(
+    camera: CameraCalibration,
+    last_index: int,
+    selected: set,
+    output_dir: Path,
+    jpeg_quality: int,
+    resume: bool,
+    map_x: np.ndarray,
+    map_y: np.ndarray,
+) -> Tuple[int, int]:
+    """Decode with OpenCV, used only when --decode-backend cpu is requested."""
+
+    capture = cv2.VideoCapture(str(camera.video_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"Could not open video: {camera.video_path}")
+    written = 0
+    skipped = 0
+    try:
+        for source_index in range(last_index + 1):
+            ok, image = capture.read()
+            if not ok:
+                raise RuntimeError(
+                    f"Could not decode frame {source_index} of {camera.video_path}"
+                )
+            delta_written, delta_skipped = write_undistorted_frame(
+                image,
+                camera,
+                source_index,
+                selected,
+                output_dir,
+                jpeg_quality,
+                resume,
+                map_x,
+                map_y,
+            )
+            written += delta_written
+            skipped += delta_skipped
+    finally:
+        capture.release()
+    return written, skipped
+
+
+def extract_with_gpu_decoder(
+    camera: CameraCalibration,
+    last_index: int,
+    selected: set,
+    output_dir: Path,
+    jpeg_quality: int,
+    resume: bool,
+    map_x: np.ndarray,
+    map_y: np.ndarray,
+    settings: DecodeSettings,
+) -> Tuple[int, int]:
+    """NVDEC decode to BGR, then keep remapping and JPEG encoding on the CPU."""
+
+    command = [
+        settings.ffmpeg_bin,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-hwaccel",
+        "cuda",
+        "-hwaccel_device",
+        str(settings.gpu_id),
+        "-hwaccel_output_format",
+        "cuda",
+        "-i",
+        str(camera.video_path),
+        "-map",
+        "0:v:0",
+        "-an",
+        "-sn",
+        "-dn",
+        "-frames:v",
+        str(last_index + 1),
+        "-vf",
+        # CUDA frames must first be downloaded in a hardware-compatible
+        # software format.  Convert NV12 to BGR only after the download.
+        "hwdownload,format=nv12,format=bgr24",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "bgr24",
+        "pipe:1",
+    ]
+    decoder = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=camera.source_width * camera.source_height * 3,
+    )
+    if decoder.stdout is None or decoder.stderr is None:
+        raise RuntimeError("Could not open FFmpeg pipes for GPU decoding.")
+
+    frame_bytes = camera.source_width * camera.source_height * 3
+    written = 0
+    skipped = 0
+    try:
+        for source_index in range(last_index + 1):
+            raw_frame = read_exact(decoder.stdout, frame_bytes)
+            if len(raw_frame) != frame_bytes:
+                stderr = decoder.stderr.read().decode("utf-8", errors="replace").strip()
+                decoder.wait()
+                raise RuntimeError(
+                    f"GPU decoder returned {len(raw_frame)} bytes for frame {source_index} "
+                    f"of {camera.video_path}; expected {frame_bytes}. {stderr}"
+                )
+            image = np.frombuffer(raw_frame, dtype=np.uint8).reshape(
+                (camera.source_height, camera.source_width, 3)
+            )
+            delta_written, delta_skipped = write_undistorted_frame(
+                image,
+                camera,
+                source_index,
+                selected,
+                output_dir,
+                jpeg_quality,
+                resume,
+                map_x,
+                map_y,
+            )
+            written += delta_written
+            skipped += delta_skipped
+        stderr = decoder.stderr.read().decode("utf-8", errors="replace").strip()
+        return_code = decoder.wait()
+        if return_code:
+            raise RuntimeError(f"GPU decode failed for {camera.video_path}: {stderr}")
+    finally:
+        if decoder.poll() is None:
+            decoder.terminate()
+            try:
+                decoder.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                LOGGER.warning(
+                    "%s: FFmpeg did not exit after SIGTERM; sending SIGKILL.",
+                    camera.name,
+                )
+                decoder.kill()
+                decoder.wait()
+    return written, skipped
+
+
+def _extract_camera_frames(
     camera: CameraCalibration,
     frame_indices: Sequence[int],
     output_dir: Path,
     jpeg_quality: int,
     resume: bool,
+    settings: DecodeSettings,
 ) -> Tuple[int, int]:
+    """Worker entry point: decode one camera then process its selected frames on CPU."""
+
+    LOGGER.info(
+        "Worker pid=%d started %s with %s decoding.",
+        os.getpid(),
+        camera.name,
+        settings.backend,
+    )
+    # One process maps one camera.  A full-resolution mapping pair is about
+    # 96 MiB, which is why maps are never retained across camera workers.
+    cv2.setNumThreads(1)
     selected = set(frame_indices)
-    last_index = frame_indices[-1]
-    # Keep maps for only one camera at a time.  A full-resolution pair takes
-    # about 96 MiB, so retaining 80 pairs would make conversion need >7 GiB.
+    preexisting = set()
+    if resume:
+        preexisting = {
+            frame_index
+            for frame_index in selected
+            if output_image_path(output_dir, camera.name, frame_index).is_file()
+        }
+        selected -= preexisting
+    if not selected:
+        return 0, len(preexisting)
+    last_index = max(selected)
     map_x, map_y = cv2.initUndistortRectifyMap(
         camera.camera_matrix,
         camera.distortion,
@@ -542,40 +955,68 @@ def extract_camera_frames(
         (camera.width, camera.height),
         cv2.CV_32FC1,
     )
-    written = 0
-    skipped = 0
-    capture = cv2.VideoCapture(str(camera.video_path))
-    if not capture.isOpened():
-        raise RuntimeError(f"Could not open video: {camera.video_path}")
+    if settings.backend == "gpu":
+        LOGGER.debug("%s FFmpeg command: %s", camera.name, " ".join([
+            settings.ffmpeg_bin, "-hwaccel", "cuda", "-hwaccel_device", str(settings.gpu_id)
+        ]))
+        written, skipped = extract_with_gpu_decoder(
+            camera,
+            last_index,
+            selected,
+            output_dir,
+            jpeg_quality,
+            resume,
+            map_x,
+            map_y,
+            settings,
+        )
+    else:
+        written, skipped = extract_with_cpu_decoder(
+            camera,
+            last_index,
+            selected,
+            output_dir,
+            jpeg_quality,
+            resume,
+            map_x,
+            map_y,
+        )
+    total_skipped = skipped + len(preexisting)
+    LOGGER.info(
+        "Worker pid=%d finished %s: written=%d, reused=%d.",
+        os.getpid(),
+        camera.name,
+        written,
+        total_skipped,
+    )
+    return written, total_skipped
+
+
+def extract_camera_frames(
+    camera: CameraCalibration,
+    frame_indices: Sequence[int],
+    output_dir: Path,
+    jpeg_quality: int,
+    resume: bool,
+    settings: DecodeSettings,
+) -> Tuple[int, int]:
+    """Worker entry point that exits after cleaning up an interrupt."""
+
     try:
-        for source_index in range(last_index + 1):
-            ok, image = capture.read()
-            if not ok:
-                raise RuntimeError(
-                    f"Could not decode frame {source_index} of {camera.video_path}"
-                )
-            if source_index not in selected:
-                continue
-            destination = output_image_path(output_dir, camera.name, source_index)
-            if resume and destination.is_file():
-                skipped += 1
-                continue
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            undistorted = cv2.remap(
-                image,
-                map_x,
-                map_y,
-                interpolation=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_CONSTANT,
-            )
-            if not cv2.imwrite(
-                str(destination), undistorted, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
-            ):
-                raise RuntimeError(f"Could not write image: {destination}")
-            written += 1
-    finally:
-        capture.release()
-    return written, skipped
+        return _extract_camera_frames(
+            camera,
+            frame_indices,
+            output_dir,
+            jpeg_quality,
+            resume,
+            settings,
+        )
+    except KeyboardInterrupt:
+        # ProcessPoolExecutor otherwise catches KeyboardInterrupt and keeps the
+        # worker alive to consume the next queued camera job.  The inner decode
+        # function's ``finally`` block has already stopped FFmpeg at this point.
+        LOGGER.warning("Worker pid=%d interrupted; exiting after cleanup.", os.getpid())
+        os._exit(130)
 
 
 def frame_entry(
@@ -643,6 +1084,80 @@ def ensure_output_dir(output_dir: Path, resume: bool, overwrite: bool) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
 
+def direct_child_pids(parent_pid: int) -> List[int]:
+    """Return direct Linux child PIDs, if the process still exists."""
+
+    try:
+        children = Path(f"/proc/{parent_pid}/task/{parent_pid}/children").read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        return []
+    return [int(pid) for pid in children.split()]
+
+
+def send_signal_if_running(pid: int, signum: int) -> None:
+    """Send a signal only when the exact process still exists."""
+
+    try:
+        os.kill(pid, signum)
+    except ProcessLookupError:
+        pass
+
+
+def cancel_camera_jobs(
+    executor: ProcessPoolExecutor, future_to_camera: Dict[object, str]
+) -> None:
+    """Cancel queued jobs and stop workers so interruption cannot orphan FFmpeg."""
+
+    for future in future_to_camera:
+        future.cancel()
+    # Python 3.8 lacks ``cancel_futures``, so running workers must be
+    # interrupted explicitly. Each worker exits after cleaning up its FFmpeg
+    # child, preventing it from taking another already-queued camera job.
+    workers = list(getattr(executor, "_processes", {}).values())
+    for worker in workers:
+        if worker.pid is not None and worker.is_alive():
+            LOGGER.warning("Interrupting camera worker pid=%d.", worker.pid)
+            try:
+                os.kill(worker.pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass
+
+    deadline = time.monotonic() + 5
+    for worker in workers:
+        remaining = max(0.0, deadline - time.monotonic())
+        worker.join(remaining)
+    decoder_pids: List[int] = []
+    for worker in workers:
+        if worker.is_alive():
+            LOGGER.warning("Force-terminating unresponsive camera worker pid=%d.", worker.pid)
+            # A stuck worker cannot execute its normal FFmpeg cleanup. Stop its
+            # direct decoder child before terminating the worker itself.
+            child_pids = direct_child_pids(worker.pid)
+            decoder_pids.extend(child_pids)
+            for child_pid in child_pids:
+                LOGGER.warning(
+                    "Terminating decoder child pid=%d of worker pid=%d.",
+                    child_pid,
+                    worker.pid,
+                )
+                send_signal_if_running(child_pid, signal.SIGTERM)
+            worker.terminate()
+    for worker in workers:
+        worker.join(timeout=5)
+        if worker.is_alive():
+            LOGGER.warning("Killing unresponsive camera worker pid=%d.", worker.pid)
+            for child_pid in direct_child_pids(worker.pid):
+                decoder_pids.append(child_pid)
+                send_signal_if_running(child_pid, signal.SIGKILL)
+            worker.kill()
+            worker.join()
+    for decoder_pid in decoder_pids:
+        send_signal_if_running(decoder_pid, signal.SIGKILL)
+    executor.shutdown(wait=True)
+
+
 def main() -> None:
     args = parse_args()
     ensure_valid_args(args)
@@ -657,12 +1172,13 @@ def main() -> None:
     LOGGER.info("Log file: %s", log_path)
     LOGGER.info(
         "Settings: scale=%s, JPEG quality=%s, undistort alpha=%s, "
-        "camera radius=%s, source coordinates=%s, resume=%s, overwrite=%s",
+        "camera radius=%s, source coordinates=%s, decoder=%s, resume=%s, overwrite=%s",
         args.image_scale,
         args.jpeg_quality,
         args.undistort_alpha,
         args.camera_radius,
         args.source_camera_coordinates,
+        args.decode_backend,
         args.resume,
         args.overwrite,
     )
@@ -683,6 +1199,14 @@ def main() -> None:
         args.max_frames,
     )
     test_cameras = parse_camera_ids(args.test_cameras, camera_names)
+    decode_settings = DecodeSettings(
+        backend=args.decode_backend,
+        ffmpeg_bin=args.ffmpeg_bin,
+        gpu_id=args.gpu_id,
+    )
+    if decode_settings.backend == "gpu":
+        validate_gpu_decoder(decode_settings)
+    worker_plan = make_worker_plan(args, cameras[camera_names[0]])
 
     LOGGER.info(
         "Validated %d cameras; source video: %d frames at %.6f FPS.",
@@ -703,45 +1227,81 @@ def main() -> None:
         len(frame_indices),
         ", ".join(test_cameras) if test_cameras else "none",
     )
+    LOGGER.info(
+        "Worker plan: %d workers (CPU available=%d MiB, estimated/task=%d MiB, CPU limit=%d).",
+        worker_plan.workers,
+        worker_plan.cpu_available_mib,
+        worker_plan.cpu_per_worker_mib,
+        worker_plan.cpu_limit,
+    )
+    if worker_plan.gpu_available_mib is not None:
+        LOGGER.info(
+            "GPU %d available=%d MiB, NVDEC budget/task=%d MiB, GPU limit=%d.",
+            args.gpu_id,
+            worker_plan.gpu_available_mib,
+            args.gpu_memory_per_worker_mib,
+            worker_plan.gpu_limit,
+        )
     total_written = 0
     total_skipped = 0
-    for index, camera_name in enumerate(camera_names, start=1):
-        camera = cameras[camera_name]
-        LOGGER.debug(
-            "%s: source=%s, output intrinsics=(fx=%.6f, fy=%.6f, cx=%.6f, cy=%.6f).",
-            camera_name,
-            camera.video_path,
-            camera.fl_x,
-            camera.fl_y,
-            camera.cx,
-            camera.cy,
-        )
-        LOGGER.info(
-            "[%02d/%02d] %s: extracting %d frames to %dx%d.",
-            index,
-            len(camera_names),
-            camera_name,
-            len(frame_indices),
-            camera.width,
-            camera.height,
-        )
-        written, skipped = extract_camera_frames(
-            camera,
-            frame_indices,
-            output_dir,
-            args.jpeg_quality,
-            resume=args.resume,
-        )
-        total_written += written
-        total_skipped += skipped
-        LOGGER.info(
-            "[%02d/%02d] %s: written=%d, reused=%d.",
-            index,
-            len(camera_names),
-            camera_name,
-            written,
-            skipped,
-        )
+    LOGGER.info("Queuing %d camera jobs.", len(camera_names))
+    executor = ProcessPoolExecutor(max_workers=worker_plan.workers)
+    future_to_camera = {}
+    try:
+        for index, camera_name in enumerate(camera_names, start=1):
+            camera = cameras[camera_name]
+            LOGGER.debug(
+                "%s: source=%s, output intrinsics=(fx=%.6f, fy=%.6f, cx=%.6f, cy=%.6f).",
+                camera_name,
+                camera.video_path,
+                camera.fl_x,
+                camera.fl_y,
+                camera.cx,
+                camera.cy,
+            )
+            LOGGER.info(
+                "[%02d/%02d] queued %s: %d frames to %dx%d.",
+                index,
+                len(camera_names),
+                camera_name,
+                len(frame_indices),
+                camera.width,
+                camera.height,
+            )
+            future = executor.submit(
+                extract_camera_frames,
+                camera,
+                frame_indices,
+                output_dir,
+                args.jpeg_quality,
+                args.resume,
+                decode_settings,
+            )
+            future_to_camera[future] = camera_name
+        for completed, future in enumerate(as_completed(future_to_camera), start=1):
+            camera_name = future_to_camera[future]
+            try:
+                written, skipped = future.result()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Camera worker {camera_name} failed; see worker log entries above."
+                ) from exc
+            total_written += written
+            total_skipped += skipped
+            LOGGER.info(
+                "[%02d/%02d] completed %s: written=%d, reused=%d.",
+                completed,
+                len(camera_names),
+                camera_name,
+                written,
+                skipped,
+            )
+    except BaseException:
+        LOGGER.warning("Conversion interrupted or failed; stopping camera workers.")
+        cancel_camera_jobs(executor, future_to_camera)
+        raise
+    else:
+        executor.shutdown(wait=True)
 
     train_transforms, test_transforms = make_transforms(
         cameras, frame_indices, output_dir, test_cameras
@@ -756,6 +1316,16 @@ def main() -> None:
         "undistort_alpha": args.undistort_alpha,
         "source_camera_coordinates": args.source_camera_coordinates,
         "camera_radius": args.camera_radius,
+        "decode_backend": args.decode_backend,
+        "gpu_id": args.gpu_id if args.decode_backend == "gpu" else None,
+        "workers": worker_plan.workers,
+        "worker_plan": {
+            "cpu_available_mib": worker_plan.cpu_available_mib,
+            "cpu_per_worker_mib": worker_plan.cpu_per_worker_mib,
+            "cpu_limit": worker_plan.cpu_limit,
+            "gpu_available_mib": worker_plan.gpu_available_mib,
+            "gpu_limit": worker_plan.gpu_limit,
+        },
         "frame_indices": frame_indices,
         "test_cameras": test_cameras,
         "train_frame_count": len(train_transforms["frames"]),
@@ -773,9 +1343,15 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except (FileNotFoundError, RuntimeError, ValueError, KeyError, json.JSONDecodeError) as exc:
+    except KeyboardInterrupt:
         if LOGGER.handlers:
-            LOGGER.error("Conversion failed: %s", exc)
+            LOGGER.warning("Conversion interrupted; camera workers and FFmpeg decoders were stopped.")
+        else:
+            print("Conversion interrupted.", file=sys.stderr)
+        raise SystemExit(130)
+    except Exception as exc:
+        if LOGGER.handlers:
+            LOGGER.exception("Conversion failed: %s", exc)
         else:
             print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2)
