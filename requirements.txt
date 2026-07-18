@@ -164,7 +164,6 @@ zipp==3.18.1
 ninja==1.13.0
 dearpygui
 trimesh
-tinycudann
 pyliblzfse
 glfw
 PyOpenGL
