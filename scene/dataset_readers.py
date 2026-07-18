@@ -274,7 +274,9 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
     with open(os.path.join(path, transformsfile)) as json_file:
         contents = json.load(json_file)
-        fovx = contents["camera_angle_x"]
+        default_fovx = contents.get("camera_angle_x")
+        default_fl_x = contents.get("fl_x")
+        default_fl_y = contents.get("fl_y")
 
         frames = contents["frames"]
         frames = sorted(frames, key=lambda x: int(os.path.basename(x['file_path']).split('.')[0].split('_')[-1]))
@@ -315,9 +317,21 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
             image = Image.fromarray(np.array(arr * 255.0, dtype=np.byte), "RGBA" if arr.shape[-1] == 4 else "RGB")
 
-            fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
-            FovY = fovx
-            FovX = fovy
+            fl_x = frame.get("fl_x", default_fl_x)
+            fl_y = frame.get("fl_y", default_fl_y)
+            if fl_x is None:
+                if default_fovx is None:
+                    raise KeyError(
+                        f"{transformsfile} needs camera_angle_x or per-frame fl_x")
+                fl_x = fov2focal(default_fovx, image.size[0])
+            if fl_y is None:
+                if default_fovx is None:
+                    fl_y = fl_x
+                else:
+                    fl_y = fov2focal(default_fovx, image.size[0])
+
+            FovX = focal2fov(float(fl_x), image.size[0])
+            FovY = focal2fov(float(fl_y), image.size[1])
 
             cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1], fid=frame_time))
 
